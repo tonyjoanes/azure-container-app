@@ -1,0 +1,53 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  RESOURCE_GROUP: rg-container-app-demo
+  APP_NAME: api-demo
+  IMAGE_NAME: api-demo
+
+# Required for OIDC token exchange with Azure
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Passwordless auth via OIDC — no stored Azure credentials.
+      # The federated credential is configured by infra/github-oidc-setup.sh.
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # az acr build runs the Docker build on Azure — no Docker daemon needed on the runner.
+      # Images are tagged with the commit SHA for traceability and 'latest' for convenience.
+      - name: Build and push image to ACR
+        run: |
+          az acr build \
+            --registry ${{ secrets.AZURE_REGISTRY_NAME }} \
+            --image ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --image ${{ env.IMAGE_NAME }}:latest \
+            .
+
+      # Each deploy creates a new immutable revision. The revision suffix and APP_VERSION
+      # both encode the run number so you can correlate a revision back to its workflow run.
+      - name: Deploy new revision to Container App
+        run: |
+          az containerapp update \
+            --name ${{ env.APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --revision-suffix "build-${{ github.run_number }}" \
+            --set-env-vars "APP_VERSION=${{ github.ref_name }}-${{ github.run_number }}"

@@ -1,0 +1,9 @@
+**/.git
+**/.vs
+**/.idea
+**/bin
+**/obj
+.github
+infra
+CLAUDE.md
+docker-compose.yml
