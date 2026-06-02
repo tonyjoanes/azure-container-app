@@ -24,6 +24,15 @@ cd src/Api && dotnet run
 docker build -t api-demo .
 ```
 
+### Deploy Azure infrastructure (Bicep)
+```bash
+# Initial deploy — creates all resources
+bash infra/deploy.sh
+
+# Re-deploy after granting AcrPush to the GitHub Actions service principal
+bash infra/deploy.sh <github-actions-principal-object-id>
+```
+
 ## Architecture
 
 ### API (`src/Api/Program.cs`)
@@ -37,7 +46,7 @@ Single-file .NET 8 minimal API with two endpoints:
 
 ### Revision model
 
-The Container App is created with `--revisions-mode multiple` (see `infra/setup.sh`). Key behaviours:
+The Container App is created with `activeRevisionsMode: 'Multiple'` (in `infra/modules/app.bicep`). Key behaviours:
 
 - Every `az containerapp update` creates a new **immutable** revision — you cannot modify a running revision, only replace it.
 - Multiple revisions run simultaneously; traffic is distributed by integer weight totalling 100.
@@ -49,28 +58,40 @@ The Container App is created with `--revisions-mode multiple` (see `infra/setup.
 2. **Build** — `az acr build` runs the Docker build server-side on Azure Container Registry. No Docker daemon is needed on the GitHub Actions runner.
 3. **Deploy** — `az containerapp update` points the app at the new image (tagged with `github.sha`) and creates a named revision.
 
-### Infrastructure scripts (`infra/`)
+### Infrastructure as Code (`infra/`)
+
+All Azure resources are defined in Bicep and deployed via `infra/deploy.sh`.
+
+| File | Purpose |
+|---|---|
+| `infra/main.bicep` | Entry point — wires together the two modules and exposes outputs |
+| `infra/main.bicepparam` | Default parameter values (location, names) |
+| `infra/modules/registry.bicep` | Azure Container Registry; conditionally grants AcrPush to the GitHub Actions service principal |
+| `infra/modules/app.bicep` | Log Analytics workspace, Container Apps Environment, user-assigned managed identity, AcrPull role assignment, and Container App |
+
+The Container App uses a **user-assigned managed identity** for image pulls so no registry credentials are stored in the app configuration. The identity is granted AcrPull on the ACR inside `modules/app.bicep`. AcrPush for the GitHub Actions service principal is granted in `modules/registry.bicep` via the optional `githubActionsPrincipalObjectId` parameter.
 
 | Script | When to run |
 |---|---|
-| `setup.sh` | Once — creates the resource group, ACR, Container Apps Environment, and initial app |
-| `github-oidc-setup.sh <github-username>` | Once after `setup.sh` — creates a service principal with a federated credential and prints the three GitHub secrets to set |
-| `revisions.sh` | On demand — `list`, `split`, `activate`, `deactivate` |
+| `infra/github-oidc-setup.sh <github-username>` | Once — creates an Azure AD service principal with a federated credential for OIDC; prints the principal object ID needed for the next step |
+| `infra/deploy.sh [principal-object-id]` | Once initially, and whenever Bicep templates change; idempotent |
+| `infra/revisions.sh` | On demand — `list`, `split`, `activate`, `deactivate` |
 
 ## First-time setup sequence
 
 ```bash
-# 1. Create Azure resources
-bash infra/setup.sh
-
-# 2. Set AZURE_REGISTRY_NAME and REGISTRY_LOGIN_SERVER secrets from the output above
-
-# 3. Configure OIDC — pass your GitHub username
+# 1. Configure OIDC — creates the service principal and prints its object ID
 bash infra/github-oidc-setup.sh tonyjoanes
 
-# 4. Set AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID from the output above
+# 2. Deploy infrastructure — creates ACR, Container Apps Environment, app,
+#    managed identity, role assignments; pass the object ID from step 1
+bash infra/deploy.sh <principal-object-id>
 
-# 5. Push to main — the workflow deploys automatically
+# 3. Set these GitHub repository secrets from the output above:
+#    AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#    AZURE_REGISTRY_NAME, REGISTRY_LOGIN_SERVER
+
+# 4. Push to main — the workflow deploys automatically
 ```
 
 ## Required GitHub secrets
@@ -80,8 +101,8 @@ bash infra/github-oidc-setup.sh tonyjoanes
 | `AZURE_CLIENT_ID` | Output of `infra/github-oidc-setup.sh` |
 | `AZURE_TENANT_ID` | Output of `infra/github-oidc-setup.sh` |
 | `AZURE_SUBSCRIPTION_ID` | Output of `infra/github-oidc-setup.sh` |
-| `AZURE_REGISTRY_NAME` | Output of `infra/setup.sh` (name only, e.g. `acrdemoa1b2c3`) |
-| `REGISTRY_LOGIN_SERVER` | Output of `infra/setup.sh` (full URL, e.g. `acrdemoa1b2c3.azurecr.io`) |
+| `AZURE_REGISTRY_NAME` | Output of `infra/deploy.sh` (name only, e.g. `acrdemoa1b2c3`) |
+| `REGISTRY_LOGIN_SERVER` | Output of `infra/deploy.sh` (full URL, e.g. `acrdemoa1b2c3.azurecr.io`) |
 
 ## Experimenting with traffic splitting
 

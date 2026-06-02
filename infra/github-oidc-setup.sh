@@ -1,32 +1,29 @@
 #!/usr/bin/env bash
-# Configures passwordless GitHub Actions → Azure authentication using OIDC federation.
-# No client secrets are created. GitHub issues short-lived tokens that Azure validates
-# against the federated credential registered here.
+# Creates a service principal with an OIDC federated credential for GitHub Actions.
+# Bicep handles all Azure role assignments — this script only performs Azure AD
+# operations that Bicep cannot do without the Microsoft Graph extension.
 #
 # Usage: bash infra/github-oidc-setup.sh <github-username-or-org>
+# Then:  bash infra/deploy.sh <printed-principal-object-id>
 set -euo pipefail
 
 GITHUB_ORG="${1:?Usage: $0 <github-username-or-org>}"
 GITHUB_REPO="azure-container-app"
-RESOURCE_GROUP="rg-container-app-demo"
 SP_NAME="sp-azure-container-app-deploy"
 
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 TENANT_ID=$(az account show --query tenantId -o tsv)
-ACR_ID=$(az acr list --resource-group "$RESOURCE_GROUP" --query "[0].id" -o tsv)
 
 echo ">>> Creating service principal: $SP_NAME"
+RESOURCE_GROUP="rg-container-app-demo"
+
 APP_ID=$(az ad sp create-for-rbac \
   --name "$SP_NAME" \
   --role "Contributor" \
   --scopes "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}" \
   --query appId -o tsv)
 
-echo ">>> Granting AcrPush on the registry"
-az role assignment create \
-  --assignee "$APP_ID" \
-  --role "AcrPush" \
-  --scope "$ACR_ID"
+PRINCIPAL_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
 
 echo ">>> Adding federated credential for pushes to main"
 az ad app federated-credential create \
@@ -41,7 +38,10 @@ az ad app federated-credential create \
 echo ""
 echo "=== OIDC setup complete ==="
 echo ""
-echo "Set these GitHub repository secrets (Settings → Secrets → Actions):"
-echo "  AZURE_CLIENT_ID=${APP_ID}"
-echo "  AZURE_TENANT_ID=${TENANT_ID}"
-echo "  AZURE_SUBSCRIPTION_ID=${SUBSCRIPTION_ID}"
+echo "Next: deploy infrastructure and grant the AcrPush role via Bicep:"
+echo "  bash infra/deploy.sh $PRINCIPAL_OID"
+echo ""
+echo "Then set these GitHub repository secrets (Settings → Secrets → Actions):"
+echo "  AZURE_CLIENT_ID=$APP_ID"
+echo "  AZURE_TENANT_ID=$TENANT_ID"
+echo "  AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
